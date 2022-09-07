@@ -1,61 +1,81 @@
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stddef.h>
 
+uint8_t CZINOMEM = 0x01;
+uint8_t TIFNOMEM = 0x02;
+uint8_t CZICORPT = 0x11;
+
+short max_tiffs = 128; // maximum amount of TIFFs generated
+
+long stepsize = 1048576; // stepsize*32 is the size of the buffer in memory (chunk size), in bytes
+// since czi files are massive, we allocate small chunks of memory at a time,
+// do operations on the czi data, write this data to the output file, release memory 
+// then rinse and repeat.
+
+uint32_t read_value_from_four_byte_buff(uint8_t *input) // note that czi is little-endian
+{
+    uint32_t x;
+    x = 0xFF & input[0];
+    x |= (0xFF & input[1]) << 8;
+    x |= (0xFF & input[2]) << 16;
+    x |= (uint32_t)(0xFF & input[3]) << 24;
+    return x;
+}
+
 uint8_t *czi2tiff(FILE *fp) {
-    /* store czi data as byte array in memory */
-    FILE *fileptr;
+    FILE *fileptr = fopen("myfile.txt", "rb");
     uint8_t *buffer;
-    long filelen;
 
-    fileptr = fopen("myfile.txt", "rb");  // open the file in binary mode
-    fseek(fileptr, 0, SEEK_END);          // jump to the end of the file
-    filelen = ftell(fileptr);             // get the current byte offset in the file
-    rewind(fileptr);                      // jump back to the beginning of the file
+    uint8_t *tiff_table = (uint8_t *)malloc(max_tiffs); // each tiff data buffer in memory will have an associated 1 byte pointer
+    uint8_t *recognized_z = (uint8_t *)malloc(max_tiffs); // will add to this array each time a new z-layer is encountered
 
-    buffer = (uint8_t *)malloc(filelen * sizeof(uint8_t)); // enough memory for the file
-    if (buffer == NULL) {
-        // malloc failed for some reason
-    }
-    fread(buffer, filelen, 1, fileptr); // read in the entire file
-    fclose(fileptr); // close the file
+    uint64_t zisraw = 0x00005A4953524157; // checks for ZISRAW in segment ID
+    uint64_t bblock = 0x000042424c4f434b; // checks if segment ID ends with BBLOCK (segment ID is ZISRAWSUBBLOCK)
 
-    /* allocate new memory for byte array in tiff format */
+    while(!feof(fileptr)) {
+        uint64_t offset = 0; // offset for where we're reading from in the chunk
 
-    /* loop through czi segments */
-    size_t offset = 0; // read from first byte
-    uint8_t *header;
-    uint8_t *data;
-
-    int endRead = 0;
-    uint64_t zisraw = 0x005A4953524157; // checks for ZISRAW in segment ID
-
-    while (1) {
-        header = buffer + offset;
-        data = buffer + 16; // header is 16 bytes long
-
-        uint64_t check = *header;
-        check = check >> 2; // longs are 8 bytes long but we're looking at the first 6 bytes only
-        if (check != zisraw) {
-            // data is corrupt; all headers should begin with ZISRAW
-            // throw an exception
-        }
-
-        long allocSize = *(header + 16);
-        offset += (allocSize + 16); // allocated size plus header size
-        if (offset > filelen) {
-            endRead = 1; // pre-check if this segment is the final segment
-        }
-
-        /* translate czi data into tiff data */
-        /* write translated data to allocated memory for tiff data */
+        // open new chunk
+        buffer = (uint8_t *)malloc(stepsize*32); // enough memory for the "chunk" that we're currently parsing.
+        fread(buffer, 1, (size_t)(stepsize*32), fileptr); // read stepsize sequences into buffer
         
-        if (endRead) {
-            break;
-        }
-    }
+        // start parsing new chunk
+        for( ; offset < stepsize ; ) { // we want to manually control offset incrementing
+            uint8_t cur_byte = *(buffer + offset); // get current byte (with appropriate offset)
+            if (offset % 32 == 0) {
+                 // check if this byte is the start of a segment header
+                 uint64_t check = cur_byte >> 2; // looking at the first 6 bytes only
+                 if (check == zisraw) { // this means the byte starts a header
+                    if (check != bblock) { // non-data segment 
+                        // skip to next segment
+                        switch (check) {
+                            case 0x0000000000004c45 : // 'le' -> ZISRAWFILE
+                                offset += 512; // skip to next segment
+                                break;
+                            case 0x0000544144415441 : // 'tadata' -> ZISRAWMETADATA
+                                offset += (256 + 16 + read_value_from_four_byte_buff(buffer + offset + 16)); 
+                                // size of xml is 16 bytes past header start and is 4 bytes
+                            // TODO: add in cases for other segment types
+                            default :
+                                break;
+                        }
+                        offset += 32; // skip to the next segment
+                        continue;
+                    }
+                    else { // the byte starts the header of a data segment
+                        offset += 16; // skip the header entirely
+                    }
+                 }
+            }
 
-    free(buffer);
+            offset++; // offset should be incremented after each iteration of the loop
+        }
+        fileptr += stepsize; // increase offset of file pointer
+        free(buffer);
+    }
+    fclose(fileptr); // close file
 }
 
