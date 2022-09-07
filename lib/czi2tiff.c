@@ -47,15 +47,16 @@ uint8_t *czi2tiff(FILE *fp) {
             uint8_t cur_byte = *(buffer + offset); // get current byte (with appropriate offset)
             if (offset % 32 == 0) {
                  // check if this byte is the start of a segment header
-                 uint64_t check = cur_byte >> 2; // looking at the first 6 bytes only
+                 uint64_t check = (uint64_t *)(cur_byte) >> 2*8; // looking at the first 6 bytes of the header only
                  if (check == zisraw) { // this means the byte starts a header
-                    if (check != bblock) { // non-data segment 
+                    uint64_t spec_check = (uint64_t *)(buffer + offset + 8) // check the next few bytes
+                    if (spec_check >> 2*8 != bblock) { // non-data segment 
                         // skip to next segment
-                        switch (check) {
+                        switch ((spec_check >> 6*8)) {
                             case 0x0000000000004c45 : // 'le' -> ZISRAWFILE
                                 offset += 512; // skip to next segment
                                 break;
-                            case 0x0000544144415441 : // 'tadata' -> ZISRAWMETADATA
+                            case 0x0000000000005441 : // 'ta' -> ZISRAWMETADATA
                                 offset += (256 + 16 + read_value_from_four_byte_buff(buffer + offset + 16)); 
                                 // size of xml is 16 bytes past header start and is 4 bytes
                             // TODO: add in cases for other segment types
