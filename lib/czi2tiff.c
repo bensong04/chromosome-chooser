@@ -45,32 +45,56 @@ uint8_t *czi2tiff(FILE *fp) {
         // start parsing new chunk
         for( ; offset < stepsize ; ) { // we want to manually control offset incrementing
             uint8_t cur_byte = *(buffer + offset); // get current byte (with appropriate offset)
+
             if (offset % 32 == 0) {
                  // check if this byte is the start of a segment header
-                 uint64_t check = (uint64_t *)(cur_byte) >> 2*8; // looking at the first 6 bytes of the header only
+                 uint64_t check = *(uint64_t *)(cur_byte) >> 2*8; // looking at the first 6 bytes of the header only
                  if (check == zisraw) { // this means the byte starts a header
-                    uint64_t spec_check = (uint64_t *)(buffer + offset + 8) // check the next few bytes
+                    uint64_t spec_check = *(uint64_t *)(buffer + offset + 8); // check the next 8 bytes (after 8 bytes of the header)
                     if (spec_check >> 2*8 != bblock) { // non-data segment 
                         // skip to next segment
+                        offset += 32; // skip over header
                         switch ((spec_check >> 6*8)) {
-                            case 0x0000000000004c45 : // 'le' -> ZISRAWFILE
+                            case 0x0000000000004c45 : // 'le' -> ZISRAWFI[LE]
                                 offset += 512; // skip to next segment
                                 break;
-                            case 0x0000000000005441 : // 'ta' -> ZISRAWMETADATA
-                                offset += (256 + 16 + read_value_from_four_byte_buff(buffer + offset + 16)); 
-                                // size of xml is 16 bytes past header start and is 4 bytes
-                            // TODO: add in cases for other segment types
+                            case 0x0000000000005441 : // 'ta' -> ZISRAWME[TA]DATA OR ZISRAWAT[TA]CH
+                                offset += (256 + read_value_from_four_byte_buff(buffer + offset)); 
+                                break;
+                                // size of xml AND attachment is immediately after header and is 4 bytes
+                                // there is also a fixed 256-byte segment
+                            case 0x0000000000005245 : // 're' -> ZISRAWDI[RE]CTORY
+                                offset += (128 + read_value_from_four_byte_buff(buffer + offset)*128);
+                                break;
+                                // size of directory is represented by number of entries
+                                // number of entries is immediately after header and is 4 bytes
+                                // each entry is 128 bytes
+                                // there is also a fixed 128-byte segment
+                            case 0x0000000000005444 : // 'td' -> ZISRAWAT[TD]IR
+                                offset += (128 + read_value_from_four_byte_buff(buffer + offset)*128);
+                                break;
+                                // exact same as regular directory
+                                // size of directory is represented by number of entries
+                                // number of entries is immediately after header and is 4 bytes
+                                // each entry is 128 bytes
+                                // there is also a fixed 128-byte segment
                             default :
                                 break;
                         }
-                        offset += 32; // skip to the next segment
+                        // start reading from new offset
                         continue;
                     }
                     else { // the byte starts the header of a data segment
-                        offset += 16; // skip the header entirely
+                        offset += 32; // skip the header entirely
+                        // refactor; we're adding 32 bytes to the offset in either case
+                        // we don't need to call continue, because we're now going to call code that
+                        // analyze data bytes.
                     }
                  }
             }
+            
+            // code for if the byte is just data
+
 
             offset++; // offset should be incremented after each iteration of the loop
         }
@@ -80,3 +104,19 @@ uint8_t *czi2tiff(FILE *fp) {
     fclose(fileptr); // close file
 }
 
+/*
+code graveyard
+old case code for 'ta' in the 9th and 10th bytes in the SID.
+removed because the code for skipping over a zisrawattach and a zisrawmetadata are exactly the same
+
+// shift four bytes to check 'tada' vs 'tach'
+if(spec_check >> 4*8 == 0x0000000054414348) { // 'tach' -> ZISRAWAT[TACH]
+    offset += (256 + read_value_from_four_byte_buff(buffer + offset));
+    break;
+}
+offset += (256 + read_value_from_four_byte_buff(buffer + offset)); 
+break;
+// size of xml is immediately after header and is 4 bytes
+// there is also a fixed 256-byte segment
+
+*/
